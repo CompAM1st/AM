@@ -1,0 +1,202 @@
+# Directions:
+# Open notepad and paste code, then click save as and click all files and for encoding select UTF-8 for file name type code.ps1 and save.
+# Allow powershell to run script, run powershell as admin and type: Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+# Change directory using cd to to where the file is, ex: cd "C:\Users\<YourName>\Desktop"
+# Run it by typing: .\code.ps1
+
+# Code
+
+<#
+    Read-only Windows Server audit script for CyberPatriot
+    - Safe: no state changes, no service starts/stops, no file edits
+    - Outputs clearly and flags suspicious items in red/yellow
+    - Run elevated for full visibility
+#>
+
+# ---------- Header ----------
+Write-Host "===== Read-Only System Audit =====" -ForegroundColor Cyan
+Write-Host "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+Write-Host "Hostname: $env:COMPUTERNAME"
+Write-Host "User (running script): $env:USERNAME"
+Write-Host "=================================" -ForegroundColor Cyan
+
+# Wrap error-prone commands to avoid noisy failures
+$ErrorActionPreference = "SilentlyContinue"
+
+# ---------- 1. Local Users ----------
+Write-Host "`n[1] Local Users:" -ForegroundColor Yellow
+Get-LocalUser | Sort-Object Name |
+    Format-Table Name, Enabled, PasswordExpired, LastLogon -AutoSize
+
+# ---------- 2. Disabled, Expired, or Suspicious Accounts ----------
+Write-Host "`n[2] Disabled, Expired, or Suspicious Accounts..." -ForegroundColor Yellow
+Get-LocalUser | Where-Object {
+    $_.Enabled -eq $false -or
+    $_.Name -like "*test*" -or
+    ($_.Name -like "*admin*" -and $_.Name -ne "Administrator") -or
+    $_.LastLogon -eq $null
+} | Format-Table Name, Enabled, PasswordExpired, LastLogon -AutoSize
+
+# ---------- 3. Administrators Group Members ----------
+Write-Host "`n[3] Administrators Group Members:" -ForegroundColor Yellow
+Get-LocalGroupMember -Group "Administrators" | Format-Table Name, ObjectClass -AutoSize
+
+# Optional: flag non-default admin accounts
+$defaultAdmins = @("Administrator")
+Write-Host "`n[3.1] Administrators not named 'Administrator':" -ForegroundColor Yellow
+Get-LocalGroupMember -Group "Administrators" |
+    Where-Object { ($_.Name -ne "BUILTIN\Administrators") -and ($_.Name -notin $defaultAdmins) } |
+    Format-Table Name, ObjectClass -AutoSize
+
+# ---------- 4. Password Policy Settings ----------
+Write-Host "`n[4] Password Policy (net accounts):" -ForegroundColor Yellow
+# net accounts is read-only and shows basic password policy
+net accounts
+
+# Also show effective local policy values where possible
+Write-Host "`n[4.1] Fine-grained local policy via SecEdit (read-only display):" -ForegroundColor Yellow
+# Note: secedit /export writes a file; commented out to avoid any writes.
+# secedit /export /cfg "$env:TEMP\secpol.cfg" > $null
+# Get-Content "$env:TEMP\secpol.cfg" | Select-String -Pattern "Password"
+
+# ---------- 5. Firewall Status ----------
+Write-Host "`n[5] Firewall Status (All Profiles):" -ForegroundColor Yellow
+Get-NetFirewallProfile | Select-Object Name, Enabled, DefaultInboundAction, DefaultOutboundAction |
+    Format-Table -AutoSize
+
+# Flag any disabled profile
+Get-NetFirewallProfile | ForEach-Object {
+    if (-not $_.Enabled) {
+        Write-Host "WARNING: Firewall profile $($_.Name) is DISABLED!" -ForegroundColor Red
+    }
+}
+
+# ---------- 6. Remote Desktop (RDP) ----------
+Write-Host "`n[6] RDP Status:" -ForegroundColor Yellow
+try {
+    $rdp = Get-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -ErrorAction Stop
+    if ($rdp.fDenyTSConnections -eq 1) {
+        Write-Host "RDP is disabled." -ForegroundColor Green
+    } else {
+        Write-Host "WARNING: RDP is enabled!" -ForegroundColor Red
+    }
+
+    # Show RDP port (read-only)
+    $rdpPort = Get-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "PortNumber" -ErrorAction SilentlyContinue
+    if ($rdpPort -and $rdpPort.PortNumber) {
+        Write-Host "RDP Listening Port: $($rdpPort.PortNumber)" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "Unable to query RDP registry keys (permission or missing keys)." -ForegroundColor DarkYellow
+}
+
+# ---------- 7. Telnet/FTP Services ----------
+Write-Host "`n[7] Telnet and FTP Services (present or running):" -ForegroundColor Yellow
+Get-Service | Where-Object {
+    $_.Name -match "(telnet|ftp|ftpsvc|msftpsvc)" 
+} | Format-Table Name, Status, DisplayName -AutoSize
+
+# ---------- 8. Shared Folders ----------
+Write-Host "`n[8] SMB Shares (excluding IPC$):" -ForegroundColor Yellow
+Get-SmbShare | Where-Object {$_.Name -ne "IPC$"} | Format-Table Name, Path, Description -AutoSize
+
+# Show share access (read-only)
+Get-SmbShare | Where-Object {$_.Name -ne "IPC$"} | ForEach-Object {
+    Write-Host "`nShare: $($_.Name) (Path: $($_.Path))" -ForegroundColor Cyan
+    try {
+        Get-SmbShareAccess -Name $_.Name | Format-Table AccountName, AccessControlType, AccessRight -AutoSize
+    } catch {
+        Write-Host "Unable to retrieve share access for $($_.Name)" -ForegroundColor DarkYellow
+    }
+}
+
+# ---------- 9. Installed Programs (Short List) ----------
+Write-Host "`n[9] Installed Programs (32-bit and 64-bit registry locations):" -ForegroundColor Yellow
+$keys = @(
+    "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+    "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+)
+Get-ItemProperty $keys -ErrorAction SilentlyContinue |
+    Select-Object DisplayName, Publisher, DisplayVersion |
+    Where-Object { $_.DisplayName } |
+    Sort-Object DisplayName |
+    Format-Table -AutoSize
+
+# Optional suspicious remote tools filter
+Write-Host "`n[9.1] Installed software that may provide remote access (TeamViewer/AnyDesk/VNC/etc):" -ForegroundColor Yellow
+Get-ItemProperty $keys -ErrorAction SilentlyContinue |
+    Where-Object { $_.DisplayName -match "TeamViewer|AnyDesk|VNC|LogMeIn|Splashtop|RemotePC|Chrome Remote" } |
+    Select-Object DisplayName, Publisher, DisplayVersion | Format-Table -AutoSize
+
+# ---------- 10. Scheduled Tasks ----------
+Write-Host "`n[10] Scheduled Tasks (all, with author and state):" -ForegroundColor Yellow
+Get-ScheduledTask | Select-Object TaskName, TaskPath, State, Author | Format-Table -AutoSize
+
+# ---------- 11. Services Set to Auto-Start ----------
+Write-Host "`n[11] Services set to Automatic (running or not):" -ForegroundColor Yellow
+Get-Service | Where-Object { $_.StartType -eq "Automatic" } | Sort-Object Status, Name |
+    Format-Table Name, DisplayName, Status -AutoSize
+
+# ---------- 12. Windows Update (Recent Events) ----------
+Write-Host "`n[12] Windows Update - Recent Events (read-only):" -ForegroundColor Yellow
+try {
+    Get-WinEvent -LogName "System" -MaxEvents 200 -ErrorAction SilentlyContinue |
+        Where-Object { $_.Message -like "*Windows Update*" -or $_.ProviderName -match "Windows Update|wuauserv" } |
+        Select-Object TimeCreated, ProviderName, Id, Message -First 10 |
+        Format-List
+} catch {
+    Write-Host "Unable to query Windows Update events." -ForegroundColor DarkYellow
+}
+
+# Also show Windows Update service status
+Get-Service -Name wuauserv -ErrorAction SilentlyContinue | Select-Object Name, Status, StartType | Format-Table -AutoSize
+
+# ---------- 13. Windows Defender / Antimalware ----------
+Write-Host "`n[13] Windows Defender / Microsoft Defender Status:" -ForegroundColor Yellow
+try {
+    Get-MpComputerStatus | Select-Object AMServiceEnabled, AntivirusEnabled, AntispywareEnabled, RealTimeProtectionEnabled, NISEnabled | Format-Table -AutoSize
+} catch {
+    Write-Host "Get-MpComputerStatus not available or requires elevated privileges." -ForegroundColor DarkYellow
+}
+
+# ---------- 14. Open Listening Network Ports (with process) ----------
+Write-Host "`n[14] Listening TCP Ports + Process (read-only):" -ForegroundColor Yellow
+try {
+    Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
+        $proc = $null
+        if ($_.OwningProcess -ne 0) {
+            $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+        }
+        [PSCustomObject]@{
+            LocalAddress = $_.LocalAddress
+            LocalPort    = $_.LocalPort
+            ProcessName  = if ($proc) { $proc.ProcessName } else { "(unknown)" }
+            PID          = $_.OwningProcess
+        }
+    } | Sort-Object LocalPort | Format-Table -AutoSize
+} catch {
+    Write-Host "Error enumerating listening ports with Get-NetTCPConnection; falling back to netstat." -ForegroundColor DarkYellow
+    netstat -ano | Select-String "LISTENING"
+}
+
+# ---------- 15. Accounts with Password Never Expires ----------
+Write-Host "`n[15] Accounts with 'Password Never Expires' (enabled accounts):" -ForegroundColor Yellow
+Get-LocalUser | Where-Object { $_.PasswordNeverExpires -eq $true -and $_.Enabled -eq $true } |
+    Format-Table Name, Enabled, PasswordNeverExpires, LastLogon -AutoSize
+
+# If Get-LocalUser iteration fails (older OS), fallback to WMIC read-only query
+if (-not (Get-LocalUser -ErrorAction SilentlyContinue)) {
+    Write-Host "Get-LocalUser unavailable; querying WMIC (read-only):" -ForegroundColor DarkYellow
+    wmic UserAccount Where "PasswordExpires=FALSE and Disabled=FALSE" Get Name
+}
+
+# ---------- 16. Audit Policy ----------
+Write-Host "`n[16] Audit Policy Settings (AuditPol):" -ForegroundColor Yellow
+AuditPol /Get /Category:* 2>$null
+
+# ---------- Footer ----------
+Write-Host "`n===== Audit Complete. Review output above. No changes were made. =====" -ForegroundColor Cyan
+Write-Host "Reminder: run elevated for the most complete results." -ForegroundColor DarkCyan
+
+# Reset error preference
+$ErrorActionPreference = "Continue"
