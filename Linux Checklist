@@ -1,0 +1,18 @@
+Check Users at users and groups - Check admins at groups -> sudo
+Check Given passwords for admission for if they are too weak like root, if so go to users and groups and click change password the generated new password.
+Update system bottom of panel click ! 
+Search Firewall and enable it
+Check Passwords, type: sudo nano /etc/login.defs - edit values to : 
+PASS_MAX_DAYS   90     # max password age (shorter is stricter)
+PASS_MIN_DAYS   7      # min days before password can be changed
+PASS_WARN_AGE   7     # days before warning user of expiry
+Save crtl+O press enter then crtl+X
+Check passwd complexity type: sudo nano /etc/pam.d/common-password.
+Find: password        requisite                       pam_pwquality.so retry=3
+Add: pam_pwquality.so retry=3 minlen=12 difok=3 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1
+Allow update manager to automatically update in automation section of update manager.
+For forensic questions delete material after if it’s not supposed to be on the computer.
+If it asks to install a service google the latest version and type sudo apt update, than sudo apt install -y {service_name}
+Check Readme for specific apps to keep uninstall all other applications. To remove apps run the purge command example: sudo apt purge -y ophcrack* wireshark*
+Disable root login for SSH, install gedit: sudo apt install -y gedit, edit it: gedit admin:///etc/ssh/sshd_config, change permitlogin Yes to NO
+To find hidden files use commands, 
