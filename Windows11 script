@@ -1,0 +1,358 @@
+# Directions
+# Open notepad and paste code, then click save as and click all files and for encoding select UTF-8 for file name type code.ps1 and save.
+# Allow powershell to run script, run powershell as admin and type: Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+# Change directory using cd to to where the file is, ex: cd "C:\Users\<YourName>\Desktop"
+# Run it by typing: .\code.ps1
+
+#Script 
+
+<#
+CyberPatriot Windows 11 Security Audit (Read-only)
+Saves: cyberpatriot_windows_audit.ps1
+
+Run as Administrator:
+    Right-click PowerShell or Windows Terminal -> Run as administrator
+    ./cyberpatriot_windows_audit.ps1
+
+This script inspects:
+ - Windows Firewall
+ - Windows Update / Auto Update settings
+ - Local password policy (via secedit export)
+ - Local accounts (blank password / admin membership)
+ - RDP / NLA settings
+ - SMBv1 status
+ - Windows Defender status
+ - BitLocker status
+ - Event Log / Audit policy
+ - Services: wuauserv, WinRM, EventLog
+ - World-writable ACLs (scoped scan)
+ - SUID/SGID not applicable to Windows (skip)
+ - Helpful fix commands are displayed for every WARN
+#>
+
+# Helper for consistent output
+function Write-OK { param($m) Write-Host "[OK]    $m" -ForegroundColor Green }
+function Write-WARN { param($m) Write-Host "[WARN]  $m" -ForegroundColor Yellow }
+function Write-INFO { param($m) Write-Host "[INFO]  $m" -ForegroundColor Cyan }
+
+Write-Host "=== CyberPatriot Windows 11 Security Audit ==="
+Write-Host "Running read-only checks (no changes will be made)" -ForegroundColor Cyan
+Write-Host ""
+
+# 1) Windows Firewall (all profiles)
+Write-Host ">>> [1] Windows Firewall (All Profiles)"
+try {
+    $profiles = Get-NetFirewallProfile
+    $allOk = $true
+    foreach ($p in $profiles) {
+        if ($p.Enabled) { Write-OK "Profile $($p.Name) enabled" }
+        else {
+            Write-WARN "Profile $($p.Name) disabled"
+            Write-Host "       ➤ Fix: Set-NetFirewallProfile -Profile $($p.Name) -Enabled True"
+            $allOk = $false
+        }
+    }
+} catch {
+    Write-WARN "Could not read firewall profiles: $_"
+}
+Write-Host ""
+
+# 2) Windows Update / Automatic Updates
+Write-Host ">>> [2] Windows Update / Automatic Updates"
+# Query service & registry auto update settings
+$wuSvc = Get-Service -Name wuauserv -ErrorAction SilentlyContinue
+if ($wuSvc -and $wuSvc.Status -eq 'Running') { Write-OK "Windows Update service (wuauserv) running" }
+else {
+    Write-WARN "Windows Update service not running"
+    Write-Host "       ➤ Fix: Start-Service wuauserv; Set-Service -Name wuauserv -StartupType Automatic"
+}
+# Check AUOptions via registry (client-side)
+$au = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update" -ErrorAction SilentlyContinue
+if ($au) {
+    if ($au.AUOptions -eq 4) { Write-OK "Auto Updates configured to automatically download and install (AUOptions=4)" }
+    else { Write-WARN "AUOptions != 4 (value: $($au.AUOptions)). Auto-updates may not be fully automatic." ; Write-Host "       ➤ Fix: Use Group Policy or Set-ItemProperty HKLM:\\...\\Auto Update -Name AUOptions -Value 4" }
+} else {
+    Write-WARN "Auto Update registry key not found or inaccessible"
+}
+Write-Host ""
+
+# 3) Local Password Policy (min length, complexity, null passwords)
+Write-Host ">>> [3] Local Password Policy"
+$tempCfg = "$env:TEMP\secpol.cfg"
+secedit /export /cfg $tempCfg 2>$null | Out-Null
+if (Test-Path $tempCfg) {
+    $sec = Get-Content $tempCfg | Where-Object { $_ -match "=" } | ForEach-Object {
+        $parts = $_ -split '='
+        @{Name=$parts[0].Trim(); Value=$parts[1].Trim()}
+    }
+    $minLen = ($sec | Where-Object { $_.Name -eq "MinimumPasswordLength" }).Value
+    $pwComplex = ($sec | Where-Object { $_.Name -eq "PasswordComplexity" }).Value
+    if ($minLen -and [int]$minLen -ge 8) { Write-OK "MinimumPasswordLength = $minLen" } else { Write-WARN "MinimumPasswordLength = $minLen (recommended >=8)"; Write-Host "       ➤ Fix: Local Security Policy -> Account Policies -> Password Policy -> Minimum password length" }
+    if ($pwComplex -and [int]$pwComplex -ge 1) { Write-OK "Password complexity enabled (PasswordComplexity = $pwComplex)" } else { Write-WARN "Password complexity disabled (PasswordComplexity = $pwComplex)"; Write-Host "       ➤ Fix: Enable Password complexity in Local Security Policy or use secedit /configure" }
+    Remove-Item $tempCfg -ErrorAction SilentlyContinue
+} else {
+    Write-WARN "Could not export local security policy (secedit failed)."
+}
+# Check for local accounts with empty password (PasswordRequired property)
+Write-Host ""
+Write-Host "Checking local accounts for required password..."
+try {
+    $localUsers = Get-LocalUser
+    $noPassUsers = $localUsers | Where-Object { $_.Enabled -eq $true -and ($_.PasswordRequired -eq $false -or $_.PasswordLastSet -eq $null) } 
+    if ($noPassUsers) {
+        Write-WARN "Local accounts without password requirement or never had password:"
+        $noPassUsers | ForEach-Object { Write-Host "    $($_.Name)   PasswordRequired=$($_.PasswordRequired) PasswordLastSet=$($_.PasswordLastSet)" }
+        Write-Host "       ➤ Fix: Set-LocalUser -Name <user> -Password (Read-Host -AsSecureString 'NewPass') ; or disable the account: Disable-LocalUser -Name <user>"
+    } else { Write-OK "All enabled local accounts require passwords" }
+}
+catch { Write-WARN "Could not enumerate local users: $_" }
+Write-Host ""
+
+# 4) Administrator group membership / suspicious users (read-only)
+Write-Host ">>> [4] Administrator Group Membership"
+try {
+    $admins = Get-LocalGroupMember -Group "Administrators" -ErrorAction Stop | Select-Object -ExpandProperty Name
+    Write-OK "Administrators group members:"
+    $admins | ForEach-Object { Write-Host "    $_" }
+    Write-Host "    (If you see unexpected users such as 'harry', remove with: Remove-LocalGroupMember -Group Administrators -Member harry)" -ForegroundColor DarkCyan
+}
+catch { Write-WARN "Could not read Administrators group: $_" }
+Write-Host ""
+
+# 5) RDP / Network Level Authentication
+Write-Host ">>> [5] Remote Desktop (RDP) / NLA"
+# Check RDP enabled (fDenyTSConnections registry) and NLA (UserAuthentication)
+try {
+    $fDeny = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -ErrorAction SilentlyContinue
+    $nla = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -ErrorAction SilentlyContinue
+    if ($fDeny.fDenyTSConnections -eq 1) { Write-OK "RDP is disabled (fDenyTSConnections=1)" } else { Write-WARN "RDP enabled (fDenyTSConnections=$($fDeny.fDenyTSConnections))"; Write-Host "       ➤ Fix: Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server' -Name 'fDenyTSConnections' -Value 1" }
+    if ($nla.UserAuthentication -eq 1) { Write-OK "NLA (UserAuthentication)=1 (enabled)" } else { Write-WARN "NLA disabled (UserAuthentication=$($nla.UserAuthentication))"; Write-Host "       ➤ Fix: Enable NLA in System -> Remote Settings or set registry UserAuthentication=1" }
+} catch { Write-WARN "Could not read RDP settings: $_" }
+Write-Host ""
+
+# 6) SMBv1 disabled
+Write-Host ">>> [6] SMBv1"
+$smb1Key = "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters"
+try {
+    $smb1 = Get-ItemProperty -Path $smb1Key -Name "SMB1" -ErrorAction SilentlyContinue
+    if ($smb1.SMB1 -eq 0) { Write-OK "SMB1 disabled on Server component" } else { Write-WARN "SMB1 may be enabled (Server SMB1=$($smb1.SMB1))"; Write-Host "       ➤ Fix: Disable SMB1: Disable-WindowsOptionalFeature -Online -FeatureName smb1protocol -Remove; Set registry SMB1=0" }
+}
+catch { Write-INFO "Could not determine SMB1 state via registry; you can run: Get-WindowsOptionalFeature -Online | Where-Object FeatureName -like '*smb1*'" }
+Write-Host ""
+
+# 7) Windows Defender / Antivirus status
+Write-Host ">>> [7] Windows Defender / AV Status"
+try {
+    $mpStatus = Get-MpComputerStatus -ErrorAction Stop
+    if ($mpStatus.AntispywareEnabled -and $mpStatus.RealTimeProtectionEnabled) { Write-OK "Windows Defender realtime protection enabled" } else { Write-WARN "Windows Defender realtime protection disabled or partial"; Write-Host "       ➤ Fix: Start-MpPreference or enable via Settings or use vendor instructions" }
+    if ($mpStatus.AntivirusEnabled) { Write-OK "Antivirus enabled" } else { Write-WARN "Antivirus disabled"; Write-Host "       ➤ Fix: Ensure Windows Defender or third-party AV is installed & active" }
+}
+catch { Write-WARN "Could not query Defender (Get-MpComputerStatus). If third-party AV is present, check its console." }
+Write-Host ""
+
+# 8) BitLocker status (drive encryption)
+Write-Host ">>> [8] BitLocker status"
+try {
+    $volumes = Get-BitLockerVolume -ErrorAction SilentlyContinue
+    if ($volumes) {
+        foreach ($v in $volumes) {
+            if ($v.VolumeStatus -eq "FullyEncrypted" -or $v.EncryptionPercentage -eq 100) { Write-OK "$($v.MountPoint) encrypted (Status: $($v.VolumeStatus))" }
+            else { Write-WARN "$($v.MountPoint) not fully encrypted (Status: $($v.VolumeStatus))"; Write-Host "       ➤ Fix: Enable-BitLocker -MountPoint $($v.MountPoint) -EncryptionMethod XtsAes256 -UsedSpaceOnly" }
+        }
+    } else { Write-INFO "No BitLocker volumes found or insufficient rights" }
+}
+catch { Write-WARN "Could not query BitLocker: $_" }
+Write-Host ""
+
+# 9) Audit policy / Event Log service
+Write-Host ">>> [9] Audit Policy & Event Log"
+try {
+    $audit = auditpol /get /category:* 2>$null
+    if ($LASTEXITCODE -eq 0) { Write-OK "Audit policy readable (use 'auditpol /get /category:*' to view)"; }
+    else { Write-WARN "Unable to read audit policy (auditpol failed)"; Write-Host "       ➤ Fix: Ensure 'Audit Policy' is configured via local/group policy or use auditpol /set /..." }
+} catch { Write-WARN "Could not run auditpol: $_" }
+# Event Log service
+$evt = Get-Service -Name EventLog -ErrorAction SilentlyContinue
+if ($evt -and $evt.Status -eq 'Running') { Write-OK "Windows Event Log service running" } else { Write-WARN "Event Log service not running"; Write-Host "       ➤ Fix: Start-Service EventLog; Set-Service -Name EventLog -StartupType Automatic" }
+Write-Host ""
+
+# 10) Services commonly audited (wuauserv already checked) - check rsyslog/auditd equivalents not apply; check WinRM
+Write-Host ">>> [10] Useful Services (WinRM)"
+$winrm = Get-Service -Name WinRM -ErrorAction SilentlyContinue
+if ($winrm -and $winrm.Status -eq 'Running') { Write-OK "WinRM running" } else { Write-INFO "WinRM not running (commonly disabled on desktops). Start if required: Set-Service -Name WinRM -StartupType Automatic; Start-Service WinRM" }
+Write-Host ""
+
+# 11) World-writable (Everyone full control) scoped scan
+Write-Host ">>> [11] Scoped World-Writable ACL Scan (search common locations only to limit time)"
+$paths = @("C:\Users","C:\Windows\Temp","C:\Temp","C:\ProgramData")
+$wwFound = $false
+foreach ($p in $paths) {
+    if (Test-Path $p) {
+        Write-Host "Scanning $p ..."
+        # Find files/folders where 'Everyone' has FullControl or Write
+        $items = Get-ChildItem -Path $p -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $acl = Get-Acl -Path $_.FullName -ErrorAction Stop
+                foreach ($ace in $acl.Access) {
+                    if ($ace.IdentityReference -match "Everyone" -and ($ace.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl -or $ace.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Write)) {
+                        [PSCustomObject]@{Path=$_.FullName; Rights=$ace.FileSystemRights}
+                    }
+                }
+            } catch { }
+        }
+        if ($items) {
+            $wwFound = $true
+            Write-WARN "Items with 'Everyone' Write/FullControl found under $p (please review):"
+            $items | Select-Object -First 10 | ForEach-Object { Write-Host "    $($_.Path)  Rights: $($_.Rights)" }
+            Write-Host "       ➤ Fix (example): icacls '<path>' /remove 'Everyone' ; or icacls '<path>' /grant 'Users:(RX)'" 
+        } else {
+            Write-OK "No obvious Everyone Write/FullControl under $p"
+        }
+    }
+}
+if (-not $wwFound) { Write-OK "Scoped world-writable scan found nothing notable." }
+Write-Host ""
+
+# 13) Simple Password Strength Checker function (interactive)
+function Test-PasswordStrength {
+    param([Parameter(Mandatory=$true)][string]$Password)
+    $score = 0
+    if ($Password.Length -ge 8) { $score++ } else { Write-Host "❌ Too short (<8 chars)" }
+    if ($Password -match '[A-Z]') { $score++ } else { Write-Host "❌ Needs uppercase" }
+    if ($Password -match '[a-z]') { $score++ } else { Write-Host "❌ Needs lowercase" }
+    if ($Password -match '\d') { $score++ } else { Write-Host "❌ Needs digit" }
+    if ($Password -match '[^A-Za-z0-9]') { $score++ } else { Write-Host "❌ Needs symbol" }
+
+    Write-Host "Password score: $score/5"
+    if ($score -eq 5) { Write-Host "✅ Strong" } else { Write-Host "⚠ Weak" }
+}
+Write-Host ">>> [13] Password strength helper available as function Test-PasswordStrength - Example:"
+Write-Host "    Test-PasswordStrength -Password 'P@ssw0rd123'"
+
+# ==============================
+# 🔒 Extended Industry Policy Checks (CIS-style)
+# Add this near the end of your audit script
+# ==============================
+Write-Host "`n=== Extended Policy & Hardening Checks ===" -ForegroundColor Cyan
+
+# 1) PowerShell Script Block Logging
+try {
+    $sbLog = Get-ItemProperty -Path "HKLM:\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" -Name "EnableScriptBlockLogging" -ErrorAction SilentlyContinue
+    if ($sbLog.EnableScriptBlockLogging -eq 1) {
+        Write-Host "✔ PowerShell Script Block Logging is enabled" -ForegroundColor Green
+    } else {
+        Write-Warn "PowerShell Script Block Logging is disabled or not configured"
+        Write-Host "→ Fix: Enable 'Turn on PowerShell Script Block Logging' via Group Policy / registry." -ForegroundColor Yellow
+    }
+} catch {
+    Write-Warn "Could not query ScriptBlockLogging registry key"
+}
+
+# 2) Auditpol: check Object Access & Other Object Access audits
+try {
+    $auditAll = auditpol /get /category:"Object Access" 2>$null
+    if ($auditAll -match "Success and Failure") {
+        Write-Host "✔ Audit for Object Access set to Success and Failure" -ForegroundColor Green
+    } else {
+        Write-Warn "Object Access audit is not fully configured (Success & Failure)"
+        Write-Host "→ Fix: auditpol /set /category:'Object Access' /success:enable /failure:enable" -ForegroundColor Yellow
+    }
+
+    $otherObj = auditpol /get /subcategory:"Other Object Access" 2>$null
+    if ($otherObj -match "Success and Failure") {
+        Write-Host "✔ Audit for Other Object Access set to Success and Failure" -ForegroundColor Green
+    } else {
+        Write-Warn "Other Object Access audit is not fully configured"
+        Write-Host "→ Fix: auditpol /set /subcategory:'Other Object Access' /success:enable /failure:enable" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Warn "Could not query Object Access audit policy"
+}
+
+# 3) Password history, max age, min age
+try {
+    $cfg = "$env:TEMP\secfull.cfg"
+    secedit /export /cfg $cfg 2>$null | Out-Null
+    $lines = Get-Content $cfg
+    $ph = ($lines | Where-Object { $_ -match "^PasswordHistory" }) -replace "PasswordHistory\s*=", ""
+    $maxAge = ($lines | Where-Object { $_ -match "^MaximumPasswordAge" }) -replace "MaximumPasswordAge\s*=", ""
+    $minAge = ($lines | Where-Object { $_ -match "^MinimumPasswordAge" }) -replace "MinimumPasswordAge\s*=", ""
+
+    if ([int]$ph -ge 24) { Write-OK "Password History = $ph (≥ 24)" } else { Write-WARN "Password History = $ph (<24)"; Write-Host "→ Fix: Local Security Policy → Password Policy → Enforce password history ≥24" }
+    if ([int]$maxAge -le 60 -and [int]$maxAge -gt 0) { Write-OK "MaximumPasswordAge = $maxAge days" } else { Write-WARN "MaximumPasswordAge = $maxAge (should be ≤ 60 days)"; Write-Host "→ Fix: Local Security Policy → Maximum password age ≤ 60" }
+    if ([int]$minAge -ge 1) { Write-OK "MinimumPasswordAge = $minAge days" } else { Write-WARN "MinimumPasswordAge = $minAge (should be ≥ 1 day)"; Write-Host "→ Fix: Local Security Policy → Minimum password age ≥ 1" }
+
+    Remove-Item $cfg -ErrorAction SilentlyContinue
+} catch {
+    Write-Warn "Could not export full security policy for password settings"
+}
+
+# 4) UAC / Elevation behavior
+try {
+    $uac = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "EnableLUA" -ErrorAction SilentlyContinue
+    if ($uac.EnableLUA -eq 1) {
+        Write-Host "✔ UAC (EnableLUA) is enabled" -ForegroundColor Green
+    } else {
+        Write-Warn "UAC is disabled (EnableLUA = 0)"
+        Write-Host "→ Fix: Set registry EnableLUA = 1 under HKLM:\\...\\Policies\\System or via Local Policy" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Warn "Could not query UAC EnableLUA key"
+}
+
+# 5) No LM Hash / Disable storing LM / Disable caching of credentials
+try {
+    $noLM = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" -Name "NoLMHash" -ErrorAction SilentlyContinue
+    if ($noLM.NoLMHash -eq 1) {
+        Write-Host "✔ LM hash storage disabled (NoLMHash=1)" -ForegroundColor Green
+    } else {
+        Write-Warn "LM hash storage is allowed or not configured (NoLMHash ≠ 1)"
+        Write-Host "→ Fix: Set HKLM:\\...\\Lsa NoLMHash = 1 in registry or via policy" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Warn "Could not read NoLMHash key"
+}
+
+# 6) Secure Boot / UEFI
+try {
+    if (Get-Command Confirm-SecureBootUEFI -ErrorAction SilentlyContinue) {
+        $sb = Confirm-SecureBootUEFI
+        if ($sb) { Write-OK "Secure Boot is enabled" -ForegroundColor Green }
+        else { Write-Warn "Secure Boot is disabled"; Write-Host "→ Fix: Enable Secure Boot in UEFI firmware settings" -ForegroundColor Yellow }
+    }
+} catch {
+    Write-INFO "Cannot check Secure Boot (maybe BIOS booted or unsupported)."
+}
+
+# 7) TLS / Schannel Protocols (block SSLv2, SSLv3, TLS1.0, TLS1.1)
+$protoPath = "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols"
+foreach ($proto in @("SSL 2.0","SSL 3.0","TLS 1.0","TLS 1.1")) {
+    $disableClient = Get-ItemProperty -Path "$protoPath\$proto\Client" -Name "Enabled" -ErrorAction SilentlyContinue
+    $disableServer = Get-ItemProperty -Path "$protoPath\$proto\Server" -Name "Enabled" -ErrorAction SilentlyContinue
+    if (($disableClient.Enabled -eq 0 -or $disableClient.Enabled -eq $null) -and ($disableServer.Enabled -eq 0 -or $disableServer.Enabled -eq $null)) {
+        Write-OK "$proto disabled (Client+Server)" -ForegroundColor Green
+    } else {
+        Write-Warn "$proto protocol is enabled (weak)."
+        Write-Host "→ Fix: Set Enabled = 0 under SCHANNEL Protocols for $proto\Server and $proto\Client" -ForegroundColor Yellow
+    }
+}
+
+# 8) Event Log retention settings (example for Security log)
+try {
+    $secLogKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Security"
+    $maxSize = (Get-ItemProperty -Path $secLogKey -Name "MaxSize" -ErrorAction SilentlyContinue).MaxSize
+    if ($maxSize -ge 83886080) {  # e.g. 80 MB
+        Write-OK "Security log size is $maxSize (≥ 80 MB)" -ForegroundColor Green
+    } else {
+        Write-Warn "Security log size is low ($maxSize)."
+        Write-Host "→ Fix: Increase MaxSize in registry at $secLogKey\MaxSize" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Warn "Could not check Security log size"
+}
+
+Write-Host "`n=== Extended Checks Completed ===" -ForegroundColor Cyan
+
+Write-Host ""
+Write-Host "=== Audit Complete ==="
+Write-Host "Review [WARN] outputs. Each WARN includes a suggested command or path to fix."
