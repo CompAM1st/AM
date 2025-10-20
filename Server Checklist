@@ -1,0 +1,12 @@
+Check ReadMe update needed apps uninstall unneeded apps.
+Be careful when removing users
+TO check what ports a exe is running on open windows as admin and type: netstat -abn -p tcp
+Change insecure passwords that aren’t long enough or complex for admins. Press windows key + r and type:  lusrmgr.msc, to open local users and group. Right click account and click set password and change it to a long complex password.
+Make sure password policies are good, win+r and type: secpol.msc, to enter securoity policy. Chaneg password history to keep atleast the past 5 passwords. Password expire i n 60 days, have to be atleast 7 days old, 12 character longs, meet password complexity, then check account lockout policy lockout after 5 failed attempts 
+Use task manager to stop unneeded apps and find ports and UIDs.
+To open shared file hit win+r and type: fsmgmt.msc, then click shares on the left side of shared folder.
+Check local policies in security settings in security options check Network access enumeration SAM accounts and shares
+Check firewall
+If organization has turned off automatic updates go to local group policy management, go to computer config, admin templates, windows components, windows updaste, config automatic update, enable it and apply 
+Check certain services aren’t enabled like smtp and ftp which is an email protocol and doesn’t need to be on a server. Go to services find the services right-click and go to properties and disable on startup.
+Check c drive - users - public - downloads etc for non work related dfiles and delete them.
