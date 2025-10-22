@@ -7,12 +7,8 @@
 #Script 
 
 <#
-CyberPatriot Windows 11 Security Audit (Read-only)
-Saves: cyberpatriot_windows_audit.ps1
+CyberPatriot Windows 11 Security Audit (Read-only ofc)
 
-Run as Administrator:
-    Right-click PowerShell or Windows Terminal -> Run as administrator
-    ./cyberpatriot_windows_audit.ps1
 
 This script inspects:
  - Windows Firewall
@@ -27,7 +23,7 @@ This script inspects:
  - Services: wuauserv, WinRM, EventLog
  - World-writable ACLs (scoped scan)
  - SUID/SGID not applicable to Windows (skip)
- - Helpful fix commands are displayed for every WARN
+ - Super Helpful fix commands are displayed for every WARN
 #>
 
 # Helper for consistent output
@@ -213,36 +209,14 @@ foreach ($p in $paths) {
 if (-not $wwFound) { Write-OK "Scoped world-writable scan found nothing notable." }
 Write-Host ""
 
-# 13) Simple Password Strength Checker function (interactive)
-function Test-PasswordStrength {
-    param([Parameter(Mandatory=$true)][string]$Password)
-    $score = 0
-    if ($Password.Length -ge 8) { $score++ } else { Write-Host "❌ Too short (<8 chars)" }
-    if ($Password -match '[A-Z]') { $score++ } else { Write-Host "❌ Needs uppercase" }
-    if ($Password -match '[a-z]') { $score++ } else { Write-Host "❌ Needs lowercase" }
-    if ($Password -match '\d') { $score++ } else { Write-Host "❌ Needs digit" }
-    if ($Password -match '[^A-Za-z0-9]') { $score++ } else { Write-Host "❌ Needs symbol" }
-
-    Write-Host "Password score: $score/5"
-    if ($score -eq 5) { Write-Host "✅ Strong" } else { Write-Host "⚠ Weak" }
-}
-Write-Host ">>> [13] Password strength helper available as function Test-PasswordStrength - Example:"
-Write-Host "    Test-PasswordStrength -Password 'P@ssw0rd123'"
-
-# ==============================
-# 🔒 Extended Industry Policy Checks (CIS-style)
-# Add this near the end of your audit script
-# ==============================
-Write-Host "`n=== Extended Policy & Hardening Checks ===" -ForegroundColor Cyan
-
 # 1) PowerShell Script Block Logging
 try {
     $sbLog = Get-ItemProperty -Path "HKLM:\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" -Name "EnableScriptBlockLogging" -ErrorAction SilentlyContinue
     if ($sbLog.EnableScriptBlockLogging -eq 1) {
-        Write-Host "✔ PowerShell Script Block Logging is enabled" -ForegroundColor Green
+        Write-Host "PowerShell Script Block Logging is enabled" -ForegroundColor Green
     } else {
         Write-Warn "PowerShell Script Block Logging is disabled or not configured"
-        Write-Host "→ Fix: Enable 'Turn on PowerShell Script Block Logging' via Group Policy / registry." -ForegroundColor Yellow
+        Write-Host "Fix: Enable 'Turn on PowerShell Script Block Logging' via Group Policy / registry." -ForegroundColor Yellow
     }
 } catch {
     Write-Warn "Could not query ScriptBlockLogging registry key"
@@ -252,18 +226,18 @@ try {
 try {
     $auditAll = auditpol /get /category:"Object Access" 2>$null
     if ($auditAll -match "Success and Failure") {
-        Write-Host "✔ Audit for Object Access set to Success and Failure" -ForegroundColor Green
+        Write-Host "Audit for Object Access set to Success and Failure" -ForegroundColor Green
     } else {
         Write-Warn "Object Access audit is not fully configured (Success & Failure)"
-        Write-Host "→ Fix: auditpol /set /category:'Object Access' /success:enable /failure:enable" -ForegroundColor Yellow
+        Write-Host "Fix: auditpol /set /category:'Object Access' /success:enable /failure:enable" -ForegroundColor Yellow
     }
 
     $otherObj = auditpol /get /subcategory:"Other Object Access" 2>$null
     if ($otherObj -match "Success and Failure") {
-        Write-Host "✔ Audit for Other Object Access set to Success and Failure" -ForegroundColor Green
+        Write-Host "Audit for Other Object Access set to Success and Failure" -ForegroundColor Green
     } else {
         Write-Warn "Other Object Access audit is not fully configured"
-        Write-Host "→ Fix: auditpol /set /subcategory:'Other Object Access' /success:enable /failure:enable" -ForegroundColor Yellow
+        Write-Host "Fix: auditpol /set /subcategory:'Other Object Access' /success:enable /failure:enable" -ForegroundColor Yellow
     }
 } catch {
     Write-Warn "Could not query Object Access audit policy"
@@ -291,10 +265,10 @@ try {
 try {
     $uac = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "EnableLUA" -ErrorAction SilentlyContinue
     if ($uac.EnableLUA -eq 1) {
-        Write-Host "✔ UAC (EnableLUA) is enabled" -ForegroundColor Green
+        Write-Host "UAC (EnableLUA) is enabled" -ForegroundColor Green
     } else {
         Write-Warn "UAC is disabled (EnableLUA = 0)"
-        Write-Host "→ Fix: Set registry EnableLUA = 1 under HKLM:\\...\\Policies\\System or via Local Policy" -ForegroundColor Yellow
+        Write-Host "Fix: Set registry EnableLUA = 1 under HKLM:\\...\\Policies\\System or via Local Policy" -ForegroundColor Yellow
     }
 } catch {
     Write-Warn "Could not query UAC EnableLUA key"
@@ -304,10 +278,10 @@ try {
 try {
     $noLM = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" -Name "NoLMHash" -ErrorAction SilentlyContinue
     if ($noLM.NoLMHash -eq 1) {
-        Write-Host "✔ LM hash storage disabled (NoLMHash=1)" -ForegroundColor Green
+        Write-Host "LM hash storage disabled (NoLMHash=1)" -ForegroundColor Green
     } else {
         Write-Warn "LM hash storage is allowed or not configured (NoLMHash ≠ 1)"
-        Write-Host "→ Fix: Set HKLM:\\...\\Lsa NoLMHash = 1 in registry or via policy" -ForegroundColor Yellow
+        Write-Host "Fix: Set HKLM:\\...\\Lsa NoLMHash = 1 in registry or via policy" -ForegroundColor Yellow
     }
 } catch {
     Write-Warn "Could not read NoLMHash key"
@@ -355,4 +329,4 @@ Write-Host "`n=== Extended Checks Completed ===" -ForegroundColor Cyan
 
 Write-Host ""
 Write-Host "=== Audit Complete ==="
-Write-Host "Review [WARN] outputs. Each WARN includes a suggested command or path to fix."
+Write-Host "Review [WARN] outputs. Each WARN includes a suggested command or path to fix (hopefully)."
