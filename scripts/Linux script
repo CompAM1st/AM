@@ -1,0 +1,215 @@
+# Directions
+# 1 terminal: nano code.sh
+# 2 Paste code, then save crtl+o, enter, crtl+x
+# 3 Make it executable: chmod +x code.sh
+# 4 Run it: sudo ./code.sh
+
+# Script
+
+#!/bin/bash
+# CyberPatriot Enhanced Linux Security Audit Script (Full Version)
+# Safe read-only audit with fix recommendations for every section.
+
+echo "=== CyberPatriot Linux Security Audit (Full Version) ==="
+echo "Running checks... (no changes will be made)"
+echo
+
+##########################################
+# 1️⃣ Kernel & Network Hardening
+##########################################
+echo ">>> [1] Kernel & Network Hardening Checks"
+declare -A secure_settings=(
+  [net.ipv4.ip_forward]=0
+  [net.ipv4.conf.all.accept_source_route]=0
+  [net.ipv4.conf.all.accept_redirects]=0
+  [net.ipv4.conf.all.send_redirects]=0
+  [net.ipv4.conf.all.rp_filter]=1
+  [net.ipv4.icmp_echo_ignore_broadcasts]=1
+  [net.ipv4.icmp_ignore_bogus_error_responses]=1
+  [net.ipv4.tcp_syncookies]=1
+)
+for key in "${!secure_settings[@]}"; do
+  current_value=$(sysctl -n "$key" 2>/dev/null)
+  expected_value="${secure_settings[$key]}"
+  if [[ "$current_value" == "$expected_value" ]]; then
+    echo "[OK] $key = $current_value"
+  else
+    echo "[WARN] $key = $current_value (Expected: $expected_value)"
+    echo "       ➤ Fix: sudo sysctl -w $key=$expected_value && echo '$key=$expected_value' | sudo tee -a /etc/sysctl.conf"
+  fi
+done
+echo
+
+##########################################
+# 2️⃣ Firewall (UFW)
+##########################################
+echo ">>> [2] Firewall Status"
+if command -v ufw >/dev/null 2>&1; then
+  status=$(sudo ufw status | head -n 1)
+  echo "UFW: $status"
+  if [[ "$status" == *inactive* ]]; then
+    echo "[WARN] UFW is inactive."
+    echo "       ➤ Fix: sudo ufw enable && sudo ufw default deny incoming && sudo ufw default allow outgoing"
+  else
+    echo "[OK] Firewall active."
+  fi
+else
+  echo "[WARN] UFW not installed."
+  echo "       ➤ Fix: sudo apt install ufw -y && sudo ufw enable"
+fi
+echo
+
+##########################################
+# 3️⃣ PAM Configuration
+##########################################
+echo ">>> [3] PAM Configuration (/etc/pam.d/common-password)"
+if [[ -f /etc/pam.d/common-password ]]; then
+  pam_line=$(grep -E "pam_pwquality|pam_cracklib" /etc/pam.d/common-password | head -n 1)
+  if [[ "$pam_line" == *"minlen="* ]]; then
+    minlen=$(echo "$pam_line" | grep -o "minlen=[0-9]*" | cut -d= -f2)
+    [[ $minlen -lt 8 ]] && echo "[WARN] PAM minlen=$minlen (should be ≥8)" && echo "       ➤ Fix: Edit /etc/pam.d/common-password and set minlen=8+" || echo "[OK] PAM minlen=$minlen"
+  else
+    echo "[WARN] No minlen parameter found in PAM config!"
+    echo "       ➤ Fix: Add 'minlen=8' to the pam_pwquality line in /etc/pam.d/common-password"
+  fi
+  if grep -q "nullok" /etc/pam.d/common-password; then
+    echo "[WARN] 'nullok' found (allows blank passwords)."
+    echo "       ➤ Fix: Remove 'nullok' from /etc/pam.d/common-password"
+  else
+    echo "[OK] 'nullok' not present."
+  fi
+else
+  echo "[!] /etc/pam.d/common-password missing!"
+fi
+echo
+
+##########################################
+# 4️⃣ SSH Configuration
+##########################################
+echo ">>> [4] SSH Configuration (/etc/ssh/sshd_config)"
+if [[ -f /etc/ssh/sshd_config ]]; then
+  permit_root=$(grep -E "^PermitRootLogin" /etc/ssh/sshd_config | awk '{print $2}')
+  pass_auth=$(grep -E "^PasswordAuthentication" /etc/ssh/sshd_config | awk '{print $2}')
+  [[ "$permit_root" == "no" ]] && echo "[OK] PermitRootLogin=no" || echo "[WARN] PermitRootLogin=$permit_root (should be no)" && echo "       ➤ Fix: sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config"
+  [[ "$pass_auth" == "no" ]] && echo "[OK] PasswordAuthentication=no" || echo "[WARN] PasswordAuthentication=$pass_auth (should be no)" && echo "       ➤ Fix: sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config"
+else
+  echo "[!] SSH not installed or config missing."
+fi
+echo
+
+##########################################
+# 5️⃣ Guest & Auto-Login
+##########################################
+echo ">>> [5] Guest / Auto-login Checks"
+lightdm_conf="/etc/lightdm/lightdm.conf"
+if [[ -f "$lightdm_conf" ]]; then
+  if grep -q "allow-guest=true" "$lightdm_conf"; then
+    echo "[WARN] Guest login enabled."
+    echo "       ➤ Fix: sudo sed -i 's/allow-guest=true/allow-guest=false/' $lightdm_conf"
+  else
+    echo "[OK] Guest login disabled."
+  fi
+  if grep -q "autologin-user=" "$lightdm_conf"; then
+    echo "[WARN] Auto-login enabled."
+    echo "       ➤ Fix: Remove or comment out 'autologin-user=' line in $lightdm_conf"
+  else
+    echo "[OK] Auto-login disabled."
+  fi
+else
+  echo "[INFO] LightDM not found — skipping guest/auto-login check."
+fi
+echo
+
+##########################################
+# 6️⃣ File Permission Audits
+##########################################
+echo ">>> [6] File Permission Audits"
+check_perm() {
+  local file=$1 expected=$2
+  if [[ -e $file ]]; then
+    perm=$(stat -c "%a" "$file")
+    if [[ "$perm" -le "$expected" ]]; then
+      echo "[OK] $file permission $perm"
+    else
+      echo "[WARN] $file permission $perm (should be $expected or stricter)"
+      echo "       ➤ Fix: sudo chmod $expected $file"
+    fi
+  else
+    echo "[!] $file not found!"
+  fi
+}
+check_perm "/etc/shadow" 600
+check_perm "/boot/grub/grub.cfg" 600
+check_perm "/etc/grub.d" 700
+check_perm "/boot" 755
+check_perm "/etc/default/grub" 644
+echo
+
+##########################################
+# 7️⃣ World-Writable & SUID/SGID Files
+##########################################
+echo ">>> [7] Scanning for Insecure Files"
+echo "[INFO] This may take a few seconds..."
+
+world_writable=$(find / -xdev -type f -perm -0002 2>/dev/null)
+suid_sgid=$(find / -xdev \( -perm -4000 -o -perm -2000 \) -type f 2>/dev/null)
+
+if [[ -n "$world_writable" ]]; then
+  echo "[WARN] World-writable files found:"
+  echo "$world_writable"
+  echo "       ➤ Review and remove write perms: sudo chmod o-w <file>"
+else
+  echo "[OK] No world-writable files found."
+fi
+
+if [[ -n "$suid_sgid" ]]; then
+  echo "[WARN] SUID/SGID files found (may be normal but should be reviewed):"
+  echo "$suid_sgid"
+  echo "       ➤ Review necessity; disable if not needed: sudo chmod -s <file>"
+else
+  echo "[OK] No unusual SUID/SGID files found."
+fi
+echo
+
+##########################################
+# 8️⃣ Audit & Logging Services
+##########################################
+echo ">>> [8] Auditd & Rsyslog Services"
+if systemctl is-active --quiet auditd; then
+  echo "[OK] auditd active."
+else
+  echo "[WARN] auditd not active."
+  echo "       ➤ Fix: sudo apt install auditd -y && sudo systemctl enable --now auditd"
+fi
+if systemctl is-active --quiet rsyslog; then
+  echo "[OK] rsyslog active."
+else
+  echo "[WARN] rsyslog not active."
+  echo "       ➤ Fix: sudo apt install rsyslog -y && sudo systemctl enable --now rsyslog"
+fi
+echo
+
+##########################################
+# 9️⃣ Automatic Updates
+##########################################
+echo ">>> [9] Automatic Updates"
+if [[ -f /etc/apt/apt.conf.d/20auto-upgrades ]]; then
+  if grep -q 'APT::Periodic::Update-Package-Lists "1"' /etc/apt/apt.conf.d/20auto-upgrades && grep -q 'APT::Periodic::Unattended-Upgrade "1"' /etc/apt/apt.conf.d/20auto-upgrades; then
+    echo "[OK] Automatic updates enabled."
+  else
+    echo "[WARN] Auto-updates not fully configured."
+    echo "       ➤ Fix: sudo dpkg-reconfigure unattended-upgrades"
+  fi
+else
+  echo "[WARN] /etc/apt/apt.conf.d/20auto-upgrades missing."
+  echo "       ➤ Fix: sudo apt install unattended-upgrades -y && sudo dpkg-reconfigure unattended-upgrades"
+fi
+echo
+
+##########################################
+# ✅ Summary
+##########################################
+echo "=== Audit Complete ==="
+echo "Review all [WARN] entries above — each includes commands to fix."
+echo "No system changes were made."
+echo
