@@ -4,18 +4,21 @@
 # 3 Make it executable: chmod +x code.sh
 # 4 Run it: sudo ./code.sh
 
+
+# CyberPatriot Linux Audit 
+# Read-only audit with fix recommendations for every section.
+# Suggests some fixes for common problems and gives warnings if a problem is detected.
+
 # Script
 
 #!/bin/bash
-# CyberPatriot Enhanced Linux Security Audit Script (Full Version)
-# Safe read-only audit with fix recommendations for every section.
 
-echo "=== CyberPatriot Linux Security Audit (Full Version) ==="
+echo "=== CyberPatriot Linux Security Audit (V.101) ==="
 echo "Running checks... (no changes will be made)"
 echo
 
 ##########################################
-# 1️⃣ Kernel & Network Hardening
+# Kernel & Network Hardening
 ##########################################
 echo ">>> [1] Kernel & Network Hardening Checks"
 declare -A secure_settings=(
@@ -41,7 +44,7 @@ done
 echo
 
 ##########################################
-# 2️⃣ Firewall (UFW)
+# Firewall (UFW)
 ##########################################
 echo ">>> [2] Firewall Status"
 if command -v ufw >/dev/null 2>&1; then
@@ -60,7 +63,7 @@ fi
 echo
 
 ##########################################
-# 3️⃣ PAM Configuration
+# PAM Config
 ##########################################
 echo ">>> [3] PAM Configuration (/etc/pam.d/common-password)"
 if [[ -f /etc/pam.d/common-password ]]; then
@@ -84,7 +87,7 @@ fi
 echo
 
 ##########################################
-# 4️⃣ SSH Configuration
+# SSH Configuration
 ##########################################
 echo ">>> [4] SSH Configuration (/etc/ssh/sshd_config)"
 if [[ -f /etc/ssh/sshd_config ]]; then
@@ -98,7 +101,7 @@ fi
 echo
 
 ##########################################
-# 5️⃣ Guest & Auto-Login
+# Guest & Auto-Login
 ##########################################
 echo ">>> [5] Guest / Auto-login Checks"
 lightdm_conf="/etc/lightdm/lightdm.conf"
@@ -121,7 +124,7 @@ fi
 echo
 
 ##########################################
-# 6️⃣ File Permission Audits
+# File Permission Audits
 ##########################################
 echo ">>> [6] File Permission Audits"
 check_perm() {
@@ -146,7 +149,7 @@ check_perm "/etc/default/grub" 644
 echo
 
 ##########################################
-# 7️⃣ World-Writable & SUID/SGID Files
+# World-Writable & SUID/SGID Files
 ##########################################
 echo ">>> [7] Scanning for Insecure Files"
 echo "[INFO] This may take a few seconds..."
@@ -172,7 +175,7 @@ fi
 echo
 
 ##########################################
-# 8️⃣ Audit & Logging Services
+# Audit & Logging Services
 ##########################################
 echo ">>> [8] Auditd & Rsyslog Services"
 if systemctl is-active --quiet auditd; then
@@ -190,7 +193,7 @@ fi
 echo
 
 ##########################################
-# 9️⃣ Automatic Updates
+# Automatic Updates
 ##########################################
 echo ">>> [9] Automatic Updates"
 if [[ -f /etc/apt/apt.conf.d/20auto-upgrades ]]; then
@@ -207,9 +210,9 @@ fi
 echo
 
 ##########################################
-# ✅ Summary
+# Summary
 ##########################################
 echo "=== Audit Complete ==="
-echo "Review all [WARN] entries above — each includes commands to fix."
-echo "No system changes were made."
+echo "Review all [WARN] entries above pretty please with cherry on top."
+echo "Dw no system changes were made."
 echo
