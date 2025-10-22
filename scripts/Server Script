@@ -9,11 +9,10 @@
 <#
     Read-only Windows Server audit script for CyberPatriot
     - Safe: no state changes, no service starts/stops, no file edits
-    - Outputs clearly and flags suspicious items in red/yellow
     - Run elevated for full visibility
 #>
 
-# ---------- Header ----------
+# ---------- Mr.Header ----------
 Write-Host "===== Read-Only System Audit =====" -ForegroundColor Cyan
 Write-Host "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "Hostname: $env:COMPUTERNAME"
